@@ -413,6 +413,24 @@ export const setBriefSettings = async (sb: SupabaseClient, settings: BriefSettin
   if (error) throw new Error(error.message)
 }
 
+// How many emails one address may get from this person in 30 days (0 = no cap). The database refuses a change
+// from a connected app and a value outside 0-20.
+export const getTouchCap = async (sb: SupabaseClient): Promise<number> => {
+  const { data, error } = await sb.from('profiles').select('touch_cap').is('deleted_at', null).maybeSingle()
+  if (error) throw new Error(error.message)
+  return (data as { touch_cap: number } | null)?.touch_cap ?? 2
+}
+
+export const setTouchCap = async (sb: SupabaseClient, cap: number): Promise<void> => {
+  const existing = await sb.from('profiles').select('user_id').maybeSingle()
+  if (existing.error) throw new Error(existing.error.message)
+  const q = existing.data
+    ? sb.from('profiles').update({ touch_cap: cap }).eq('user_id', (existing.data as { user_id: string }).user_id)
+    : sb.from('profiles').insert({ touch_cap: cap })
+  const { error } = await q
+  if (error) throw new Error(error.message)
+}
+
 // What a stand-in such as [EMAIL_12] stands for. Only the person, on the site.
 export const lookupHandle = async (sb: SupabaseClient, kind: 'email' | 'phone', n: number): Promise<string | null> => {
   const { data, error } = await sb.from('handles').select('value').eq('kind', kind).eq('n', n).is('deleted_at', null).maybeSingle()

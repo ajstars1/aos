@@ -14,6 +14,7 @@ import {
   removeMailConnection,
   saveApiKey,
   setBriefSettings,
+  setTouchCap,
   saveMailConnection,
   setMaskLevel,
   setProfile,
@@ -286,6 +287,23 @@ export const savePrivacy = async (formData: FormData): Promise<void> => {
   revalidatePath('/app')
   if (failed) back('privacy')
   done('privacy')
+}
+
+// The person's email cap: how many emails one address may get from them in 30 days; 0 = no cap.
+export const saveTouchCap = async (formData: FormData): Promise<void> => {
+  const parsed = z.coerce.number().int().min(0).max(20).safeParse(formData.get('touch_cap'))
+  if (!parsed.success) back('input')
+  const user = await signedIn().catch(() => null)
+  if (!user) redirect('/login?next=/app')
+  let failed = false
+  try {
+    await setTouchCap(user.sb, parsed.data!)
+  } catch {
+    failed = true
+  }
+  revalidatePath('/app')
+  if (failed) back('cap')
+  done('cap')
 }
 
 const hour = z.coerce.number().int().min(0).max(23)

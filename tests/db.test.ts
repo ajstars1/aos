@@ -13,6 +13,7 @@ const ALICE = '11111111-1111-4111-8111-111111111111'
 const BOB = '22222222-2222-4222-8222-222222222222'
 const E_NEWLINE = '/x\ny'
 const CAROL = '33333333-3333-4333-8333-333333333333' // added later, for a clean send history
+const DAVE = '44444444-4444-4444-8444-444444444444' // a profile created by a connected app
 const APP = 'a0000000-0000-4000-8000-00000000000a' // an OAuth client id, as in a token issued to Claude or ChatGPT
 
 // The parts of a Supabase project the migration relies on: roles, the auth schema and its two helpers.
@@ -677,6 +678,35 @@ describe('scheduled sends and the touch cap', () => {
     await approve(bob, id)
     expect((await claim(BOB, id)).ciphertext).toMatch(/^v1\./)
     await finish(BOB, id, 'sent')
+  })
+
+  test('the person sets the cap (0 = none); an assistant can neither change it nor create it lifted', async () => {
+    const have = await pg.query<Row>('select 1 from profiles where user_id = $1', [CAROL])
+    if (!have.rows.length) await as(carol, 'insert into profiles default values')
+    await fails(as(carolApp, 'update profiles set touch_cap = 0'), /Only the person can change the email cap/)
+    await fails(as(carolApp, 'update profiles set touch_cap = 20'), /Only the person can change the email cap/)
+
+    await pg.query(`insert into touches (user_id, recipient_key, approval_id) values ($1, 'cap@example.com', -10), ($1, 'cap@example.com', -11)`, [CAROL])
+    const id = await email(carolApp, 'cap@example.com')
+    await approve(carol, id)
+    expect(String((await claim(CAROL, id)).blocked)).toMatch(/your cap is 2/)
+    await as(carol, 'update profiles set touch_cap = 3')
+    expect((await claim(CAROL, id)).ciphertext).toMatch(/^v1\./)
+    await finish(CAROL, id, 'sent')
+    const fourth = await email(carolApp, 'cap@example.com')
+    await approve(carol, fourth)
+    expect(String((await claim(CAROL, fourth)).blocked)).toMatch(/already got 3 emails .*your cap is 3/)
+    await as(carol, 'update profiles set touch_cap = 0')
+    expect((await claim(CAROL, fourth)).ciphertext).toMatch(/^v1\./)
+    await finish(CAROL, fourth, 'retry')
+    await fails(as(carol, 'update profiles set touch_cap = 21'), /check constraint/)
+    await as(carol, 'update profiles set touch_cap = 2')
+    if (!have.rows.length) await pg.query('delete from profiles where user_id = $1', [CAROL]) // later tests create it
+
+    // a profile an app creates starts at the default, whatever it asks for
+    await pg.query('insert into auth.users (id) values ($1)', [DAVE])
+    await as({ sub: DAVE, clientId: APP }, 'insert into profiles (touch_cap) values (0)')
+    expect((await pg.query<Row>('select touch_cap from profiles where user_id = $1', [DAVE])).rows[0].touch_cap).toBe(2)
   })
 
   test('nobody can read, add, change or remove a touch, or change the try count', async () => {

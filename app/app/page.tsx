@@ -6,6 +6,7 @@ import {
   apiKeys,
   DEFAULT_BRIEFS,
   getBriefSettings,
+  getTouchCap,
   getMaskLevel,
   listApprovals,
   loadAgenda,
@@ -33,6 +34,7 @@ import {
   disconnectEmail,
   disconnectPhone,
   saveBriefs,
+  saveTouchCap,
   savePrivacy,
   saveTimeZone,
   sendNow,
@@ -57,19 +59,21 @@ const MESSAGES: Record<string, string> = {
   send_login: 'Approved, but your mail provider refused the saved login. Reconnect your email below, then press Send now.',
   send_shape: 'Approved, but aos cannot send this one itself: it needs exactly one email address and a subject. Your assistant can still send it.',
   send_limit: 'Approved, but the limit of 50 emails a day is reached. Send it tomorrow.',
-  send_touch: 'Approved, but not sent: this address already got 2 emails from you in the last 30 days. The reason is shown with the draft; it stays approved.',
+  send_touch: 'Approved, but not sent: this address already reached your email cap for the last 30 days. The reason is shown with the draft; it stays approved.',
   send_unknown: 'The connection broke while sending. Check your Sent folder, or the service, before trying again.',
   send_refused: 'Approved and run, but the service refused the request. The answer is shown with the draft; it is not retried.',
   key_input: 'Check the key details: a short name (letters, digits, - or _), the service address such as api.example.com, and the key itself.',
   key_save: 'Could not save or remove that key. Try again in a minute.',
   privacy: 'Could not save the privacy setting. Try again in a minute.',
   briefs: 'Could not save your daily messages. Try again in a minute.',
+  cap: 'Could not save the email cap. Try again in a minute.',
 }
 
 const NOTICES: Record<string, string> = {
   sent: 'Sent from your mailbox.',
   scheduled: 'Approved. aos sends it from your mailbox at its scheduled time.',
   briefs: 'Daily messages saved.',
+  cap: 'Email cap saved.',
   mail: 'Email connected. Approved emails now go out from your own mailbox.',
   ran: 'Done. The request ran with your saved key.',
   key: 'Key saved. Your assistant can now use it by name, without seeing it.',
@@ -173,6 +177,31 @@ const HourPick = ({ id, name, value, label }: { id: string; name: string; value:
   </>
 )
 
+// The person's own cap on emails to one address. aos cannot see replies, so the person decides how strict it is.
+const TouchCapForm = ({ cap }: { cap: number }) => (
+  <form action={saveTouchCap} className="mt-3 space-y-2 rounded-xl border border-line bg-raised p-4">
+    <div className="flex items-center justify-between gap-3">
+      <label htmlFor="touch-cap" className="text-sm">
+        Emails to one address in 30 days
+      </label>
+      <select id="touch-cap" name="touch_cap" defaultValue={String(cap)} className="rounded-lg border border-line bg-ground px-2 py-1 text-sm">
+        {[0, 1, 2, 3, 5, 10, 20].map((n) => (
+          <option key={n} value={n}>
+            {n === 0 ? 'no cap' : n}
+          </option>
+        ))}
+      </select>
+    </div>
+    <p className="text-xs text-faint">
+      Stops an assistant from emailing the same person again and again. 2 suits cold outreach; raise it, or pick no cap, for
+      people you are in a conversation with. Only you can change this; your assistant cannot.
+    </p>
+    <button type="submit" className="rounded-lg border border-line px-3 py-1.5 text-sm active:bg-lift">
+      Save
+    </button>
+  </form>
+)
+
 // The morning brief and evening line on Telegram: on or off, and at which hour of the person's day.
 const DailyMessages = ({ b, tz }: { b: BriefSettings; tz: string }) => (
   <form action={saveBriefs} className="mt-3 space-y-3 rounded-xl border border-line bg-raised p-4">
@@ -243,7 +272,7 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
   const mailOn = vaultKey() !== null && channelEnv().secretKey !== null
   // "EMAIL_12", "[phone_3]" ... typed into the look-up box
   const asked = /^\[?(EMAIL|PHONE)_(\d{1,9})\]?$/i.exec((who ?? '').trim())
-  const [{ agenda, tz }, approved, grants, origin, phone, mail, keys, level, askedValue, briefs] = await Promise.all([
+  const [{ agenda, tz }, approved, grants, origin, phone, mail, keys, level, askedValue, briefs, touchCap] = await Promise.all([
     loadAgenda(user.sb, 1, now),
     listApprovals(user.sb, 'approved'),
     user.sb.auth.oauth.listGrants().then(
@@ -259,6 +288,7 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
       ? lookupHandle(user.sb, asked[1].toLowerCase() === 'email' ? 'email' : 'phone', Number(asked[2])).catch(() => null)
       : Promise.resolve(null),
     phoneOn ? getBriefSettings(user.sb).catch((): BriefSettings => DEFAULT_BRIEFS) : Promise.resolve(DEFAULT_BRIEFS),
+    mailOn ? getTouchCap(user.sb).catch(() => 2) : Promise.resolve(2),
   ])
   const message = e ? MESSAGES[e] : undefined
   const notice = n ? NOTICES[n] : undefined
@@ -394,6 +424,7 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
       {mailOn ? (
         <Section title="Email sending">
           {mail ? (
+            <>
             <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-raised p-3">
               <div className="min-w-0">
                 <p className="truncate text-sm">{mail.username}</p>
@@ -407,6 +438,8 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
                 </button>
               </form>
             </div>
+            <TouchCapForm cap={touchCap} />
+            </>
           ) : (
             <form action={connectEmail} className="space-y-3 rounded-xl border border-line bg-raised p-4" autoComplete="off">
               <p className="text-sm text-dim">
