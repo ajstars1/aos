@@ -762,6 +762,108 @@ describe('scheduled sends and the touch cap', () => {
   })
 })
 
+describe('morning brief and evening line', () => {
+  const server: Who = { role: 'service_role' }
+  const carol: Who = { sub: CAROL }
+  const carolApp: Who = { sub: CAROL, clientId: APP }
+  const DAY = '2026-11-11'
+  const from = (): string => new Date(Date.now() - 12 * 3600_000).toISOString()
+  const to = (): string => new Date(Date.now() + 12 * 3600_000).toISOString()
+  const claim = async (user: string, kind: string, day = DAY): Promise<Row | null> =>
+    (await as(server, 'select brief_claim($1, $2, $3::date, $4::timestamptz, $5::timestamptz) as b', [user, kind, day, from(), to()]))[0].b as Row | null
+  const finish = (user: string, kind: string, ok: boolean, day = DAY): Promise<Row[]> =>
+    as(server, 'select brief_finish($1, $2, $3::date, $4)', [user, kind, day, ok])
+  type Target = { user_id: string; timezone: string; brief_hour: number; evening_hour: number; brief_on: boolean; evening_on: boolean }
+  const targets = async (): Promise<Target[]> => (await as(server, 'select brief_targets() as t'))[0].t as Target[]
+
+  test('only linked people are targets, with 08:00 and 21:00 by default', async () => {
+    expect((await targets()).find((t) => t.user_id === CAROL)).toBeUndefined()
+    expect(await claim(CAROL, 'morning')).toBeNull()
+    const code = String((await as(carol, `select create_link_code('telegram') as c`))[0].c)
+    await as(server, `select channel_claim('telegram', $1, '900300', null)`, [code])
+    expect((await targets()).find((t) => t.user_id === CAROL)).toEqual({
+      user_id: CAROL, timezone: 'Asia/Kolkata', brief_hour: 8, evening_hour: 21, brief_on: true, evening_on: true,
+    })
+  })
+
+  test('the person sets the hours; the database refuses an hour that does not exist', async () => {
+    await as(carol, `insert into profiles (timezone, brief_hour, evening_hour) values ('America/New_York', 7, 22)`)
+    await fails(as(carol, 'update profiles set brief_hour = 24'), /check constraint/)
+    await fails(as(carol, 'update profiles set evening_hour = -1'), /check constraint/)
+    expect((await targets()).find((t) => t.user_id === CAROL)).toMatchObject({ timezone: 'America/New_York', brief_hour: 7, evening_hour: 22 })
+  })
+
+  // Two runs at once are serialised by the primary key on brief_log; PGlite runs one query at a time, so here they
+  // are simply run one after the other.
+  test('one morning brief per person per day, however often the timer runs', async () => {
+    const [t] = await as(carol, `insert into tasks (title, due_at) values ('Carol call', now()) returning id`)
+    await as(carol, `select complete_task($1, 'done')`, [t.id])
+    await as(carol, `insert into tasks (title, due_at) values ('Carol open task', now())`)
+    const first = await claim(CAROL, 'morning')
+    const second = await claim(CAROL, 'morning')
+    const got = [first, second].filter(Boolean) as Row[]
+    expect(got.length).toBe(1)
+    expect(got[0].chat_id).toBe('900300')
+    expect(got[0].timezone).toBe('America/New_York')
+    expect(await claim(CAROL, 'morning')).toBeNull()
+    await finish(CAROL, 'morning', true)
+    expect(await claim(CAROL, 'morning')).toBeNull()
+    // the next day is a new one
+    expect(await claim(CAROL, 'morning', '2026-11-12')).not.toBeNull()
+  })
+
+  test('a message Telegram refused is tried again, at most 3 times', async () => {
+    expect(await claim(CAROL, 'evening')).not.toBeNull()
+    await finish(CAROL, 'evening', false)
+    expect(await claim(CAROL, 'evening')).not.toBeNull()
+    await finish(CAROL, 'evening', false)
+    expect(await claim(CAROL, 'evening')).not.toBeNull()
+    await finish(CAROL, 'evening', false)
+    expect(await claim(CAROL, 'evening')).toBeNull()
+  })
+
+  test('the brief holds only that person\'s data', async () => {
+    const b = (await claim(CAROL, 'evening', '2026-11-13')) as Row
+    const json = JSON.stringify(b)
+    expect(json).not.toContain('user_id')
+    expect(json).not.toContain('Bob task')
+    expect((b.tasks as Row[]).map((t) => t.title)).toContain('Carol open task')
+    expect(b.done).toEqual(['Carol call'])
+    expect(b.done_count).toBe(1)
+    const sent = (await pg.query<{ n: number }>(`select count(*)::int as n from activity where user_id = $1 and action like 'sent%'`, [CAROL])).rows[0].n
+    expect(sent).toBeGreaterThan(0)
+    expect(b.sent_count).toBe(sent)
+    expect(b.waiting).toBe((await as(carol, `select count(*)::int as n from approvals where status = 'pending' and deleted_at is null`))[0].n)
+    await fails(as(server, 'select brief_claim($1, $2, $3::date, now(), now() + interval \'3 days\')', [CAROL, 'morning', '2026-11-20']), /not one day/)
+    await fails(as(server, 'select brief_claim($1, $2, $3::date, now(), now() + interval \'1 day\')', [CAROL, 'noon', '2026-11-20']), /kind must be/)
+  })
+
+  test('a message switched off is not sent; both off means not a target', async () => {
+    await as(carol, 'update profiles set brief_on = false')
+    expect(await claim(CAROL, 'morning', '2026-11-14')).toBeNull()
+    expect((await targets()).find((t) => t.user_id === CAROL)).toBeDefined()
+    await as(carolApp, 'update profiles set evening_on = false')
+    expect((await targets()).find((t) => t.user_id === CAROL)).toBeUndefined()
+    expect(await claim(CAROL, 'evening', '2026-11-14')).toBeNull()
+  })
+
+  test('users and apps cannot call the brief functions or read the log', async () => {
+    for (const who of [carol, carolApp, { role: 'anon' } as Who]) {
+      await fails(as(who, 'select brief_targets()'), /permission denied/)
+      await fails(as(who, 'select brief_claim($1, $2, $3::date, now(), now() + interval \'1 day\')', [CAROL, 'morning', '2026-11-30']), /permission denied/)
+      await fails(as(who, 'select brief_finish($1, $2, $3::date, true)', [CAROL, 'morning', DAY]), /permission denied/)
+      await fails(as(who, 'select * from brief_log'), /permission denied/)
+    }
+  })
+
+  test('an unlinked chat gets nothing', async () => {
+    await as(carol, 'update profiles set brief_on = true')
+    await as(carol, 'update channel_links set deleted_at = now() where deleted_at is null')
+    expect(await claim(CAROL, 'morning', '2026-11-15')).toBeNull()
+    expect((await targets()).find((t) => t.user_id === CAROL)).toBeUndefined()
+  })
+})
+
 describe('code and schema agree', () => {
   test('every column the code selects exists', async () => {
     const lists: Record<string, string> = { tasks: TASK_COLS, approvals: APPROVAL_COLS, goals: GOAL_COLS, events: EVENT_COLS, activity: ACTIVITY_COLS }
@@ -791,7 +893,7 @@ describe('code and schema agree', () => {
     const tables = (await pg.query<{ relname: string; relrowsecurity: boolean }>(
       `select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r'`,
     )).rows
-    expect(tables.length).toBe(13)
+    expect(tables.length).toBe(14)
     for (const t of tables) expect(t.relrowsecurity, t.relname).toBe(true)
     const deletes = (await pg.query(`select 1 from pg_policies where schemaname = 'public' and cmd in ('DELETE', 'ALL')`)).rows
     expect(deletes).toEqual([])
