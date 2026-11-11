@@ -49,7 +49,14 @@ const offsetMs = (d: Date, tz: string): number => {
 export const instantOf = (w: Wall, tz: string): Date => {
   const asUtc = Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute, w.second)
   const first = asUtc - offsetMs(new Date(asUtc), tz)
-  return new Date(asUtc - offsetMs(new Date(first), tz))
+  const second = asUtc - offsetMs(new Date(first), tz)
+  if (second === first) return new Date(second)
+  // The offset changes near this reading. If `second` shows the reading asked for, it exists (in a fall-back
+  // overlap, this is one of its two instants). If not, the reading was skipped: take the later candidate, which is
+  // the same distance after the jump as the reading was after the last valid time.
+  const r = wallTime(new Date(second), tz)
+  const shown = Date.UTC(r.year, r.month - 1, r.day, r.hour, r.minute, r.second)
+  return new Date(shown === asUtc ? second : Math.max(first, second))
 }
 
 export const dayStart = (d: Date, tz: string): Date => {

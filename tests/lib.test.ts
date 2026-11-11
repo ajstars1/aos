@@ -26,6 +26,16 @@ describe('time zones', () => {
     // and back in spring (8 Mar 2026): a 23-hour day
     expect(addDays(new Date('2026-03-07T14:00:00Z'), 1, NY).toISOString()).toBe('2026-03-08T13:00:00.000Z')
   })
+  test('a wall time skipped by daylight saving lands after the jump, in either hemisphere of the clock', () => {
+    // New York, 8 Mar 2026: 02:00 jumps to 03:00. 02:00 -> 03:00 EDT, 02:30 -> 03:30 EDT.
+    expect(instantOf({ year: 2026, month: 3, day: 8, hour: 2, minute: 0, second: 0 }, NY).toISOString()).toBe('2026-03-08T07:00:00.000Z')
+    expect(instantOf({ year: 2026, month: 3, day: 8, hour: 2, minute: 30, second: 0 }, NY).toISOString()).toBe('2026-03-08T07:30:00.000Z')
+    // London, 29 Mar 2026: 01:00 jumps to 02:00. 01:30 -> 02:30 BST.
+    expect(instantOf({ year: 2026, month: 3, day: 29, hour: 1, minute: 30, second: 0 }, 'Europe/London').toISOString()).toBe('2026-03-29T01:30:00.000Z')
+    // a reading that exists twice (New York, 1 Nov 2026, 01:30) still gives one of its instants
+    const twice = instantOf({ year: 2026, month: 11, day: 1, hour: 1, minute: 30, second: 0 }, NY)
+    expect(['2026-11-01T05:30:00.000Z', '2026-11-01T06:30:00.000Z']).toContain(twice.toISOString())
+  })
   test('instantOf round-trips and rolls a day overflow into the next month', () => {
     const w = wallTime(new Date('2026-11-30T12:15:00Z'), IST)
     expect(instantOf(w, IST).toISOString()).toBe('2026-11-30T12:15:00.000Z')
