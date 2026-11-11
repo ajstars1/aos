@@ -384,6 +384,35 @@ export const setMaskLevel = async (sb: SupabaseClient, level: MaskLevel): Promis
   if (error) throw new Error(error.message)
 }
 
+// The morning brief and evening line on Telegram: at which hour of the person's own day, and whether each is on.
+export interface BriefSettings {
+  brief_hour: number
+  evening_hour: number
+  brief_on: boolean
+  evening_on: boolean
+}
+
+export const DEFAULT_BRIEFS: BriefSettings = { brief_hour: 8, evening_hour: 21, brief_on: true, evening_on: true }
+
+export const BRIEF_COLS = 'brief_hour,evening_hour,brief_on,evening_on'
+
+export const getBriefSettings = async (sb: SupabaseClient): Promise<BriefSettings> => {
+  const { data, error } = await sb.from('profiles').select(BRIEF_COLS).is('deleted_at', null).maybeSingle()
+  if (error) throw new Error(error.message)
+  return (data as BriefSettings | null) ?? DEFAULT_BRIEFS
+}
+
+// The database refuses an hour outside 0-23.
+export const setBriefSettings = async (sb: SupabaseClient, settings: BriefSettings): Promise<void> => {
+  const existing = await sb.from('profiles').select('user_id').maybeSingle()
+  if (existing.error) throw new Error(existing.error.message)
+  const q = existing.data
+    ? sb.from('profiles').update(settings).eq('user_id', (existing.data as { user_id: string }).user_id)
+    : sb.from('profiles').insert(settings)
+  const { error } = await q
+  if (error) throw new Error(error.message)
+}
+
 // What a stand-in such as [EMAIL_12] stands for. Only the person, on the site.
 export const lookupHandle = async (sb: SupabaseClient, kind: 'email' | 'phone', n: number): Promise<string | null> => {
   const { data, error } = await sb.from('handles').select('value').eq('kind', kind).eq('n', n).is('deleted_at', null).maybeSingle()

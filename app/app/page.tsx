@@ -4,6 +4,8 @@ import { channelEnv } from '../../lib/env'
 import { PROVIDERS, unsendable } from '../../lib/mail'
 import {
   apiKeys,
+  DEFAULT_BRIEFS,
+  getBriefSettings,
   getMaskLevel,
   listApprovals,
   loadAgenda,
@@ -11,6 +13,7 @@ import {
   mailConnection,
   phoneLink,
   type ApiKeyInfo,
+  type BriefSettings,
   type MailConnection,
   type MaskLevel,
   type PhoneLink,
@@ -29,6 +32,7 @@ import {
   disconnectApp,
   disconnectEmail,
   disconnectPhone,
+  saveBriefs,
   savePrivacy,
   saveTimeZone,
   sendNow,
@@ -59,6 +63,7 @@ const MESSAGES: Record<string, string> = {
   key_input: 'Check the key details: a short name (letters, digits, - or _), the service address such as api.example.com, and the key itself.',
   key_save: 'Could not save or remove that key. Try again in a minute.',
   privacy: 'Could not save the privacy setting. Try again in a minute.',
+  briefs: 'Could not save your daily messages. Try again in a minute.',
 }
 
 const NOTICES: Record<string, string> = {
@@ -151,6 +156,51 @@ const Draft = ({ a, tz, mail }: { a: Approval; tz: string; mail: MailConnection 
   </li>
 )
 
+const HOURS = Array.from({ length: 24 }, (_, h) => h)
+
+const HourPick = ({ id, name, value, label }: { id: string; name: string; value: number; label: string }) => (
+  <>
+    <label htmlFor={id} className="sr-only">
+      {label}
+    </label>
+    <select id={id} name={name} defaultValue={value} className="rounded-lg border border-line bg-ground px-2 py-1.5 text-sm outline-none focus:border-dim">
+      {HOURS.map((h) => (
+        <option key={h} value={h}>
+          {String(h).padStart(2, '0')}:00
+        </option>
+      ))}
+    </select>
+  </>
+)
+
+// The morning brief and evening line on Telegram: on or off, and at which hour of the person's day.
+const DailyMessages = ({ b, tz }: { b: BriefSettings; tz: string }) => (
+  <form action={saveBriefs} className="mt-3 space-y-3 rounded-xl border border-line bg-raised p-4">
+    <p className="text-sm text-dim">Daily messages on Telegram, at your time ({tz})</p>
+    <div className="flex items-center justify-between gap-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="brief_on" defaultChecked={b.brief_on} />
+        Morning brief
+      </label>
+      <HourPick id="brief-hour" name="brief_hour" value={b.brief_hour} label="Hour of the morning brief" />
+    </div>
+    <div className="flex items-center justify-between gap-3">
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" name="evening_on" defaultChecked={b.evening_on} />
+        Evening line
+      </label>
+      <HourPick id="evening-hour" name="evening_hour" value={b.evening_hour} label="Hour of the evening line" />
+    </div>
+    <p className="text-xs text-faint">
+      Morning: what is due today, drafts waiting (with Approve and Reject), goals off pace. Evening: one line with what got done, what
+      is waiting and what was sent. Each arrives within about an hour after the time you pick.
+    </p>
+    <button type="submit" className="rounded-lg border border-line px-3 py-1.5 text-sm active:bg-lift">
+      Save
+    </button>
+  </form>
+)
+
 const GoalRow = ({ g, now, tz }: { g: Goal; now: Date; tz: string }) => {
   const { pace } = goalPace(g, now)
   const tone = pace === 'behind' || pace === 'late' ? 'text-late' : pace === 'on pace' || pace === 'met' ? 'text-good' : 'text-faint'
@@ -193,7 +243,7 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
   const mailOn = vaultKey() !== null && channelEnv().secretKey !== null
   // "EMAIL_12", "[phone_3]" ... typed into the look-up box
   const asked = /^\[?(EMAIL|PHONE)_(\d{1,9})\]?$/i.exec((who ?? '').trim())
-  const [{ agenda, tz }, approved, grants, origin, phone, mail, keys, level, askedValue] = await Promise.all([
+  const [{ agenda, tz }, approved, grants, origin, phone, mail, keys, level, askedValue, briefs] = await Promise.all([
     loadAgenda(user.sb, 1, now),
     listApprovals(user.sb, 'approved'),
     user.sb.auth.oauth.listGrants().then(
@@ -208,6 +258,7 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
     mailOn && asked
       ? lookupHandle(user.sb, asked[1].toLowerCase() === 'email' ? 'email' : 'phone', Number(asked[2])).catch(() => null)
       : Promise.resolve(null),
+    phoneOn ? getBriefSettings(user.sb).catch((): BriefSettings => DEFAULT_BRIEFS) : Promise.resolve(DEFAULT_BRIEFS),
   ])
   const message = e ? MESSAGES[e] : undefined
   const notice = n ? NOTICES[n] : undefined
@@ -540,6 +591,7 @@ const AppPage = async ({ searchParams }: { searchParams: Promise<{ e?: string; n
               <p className="mt-2 text-xs text-faint">Opens Telegram. Press Start there and you are done. The link works once, for 15 minutes.</p>
             </div>
           )}
+          {phone ? <DailyMessages b={briefs} tz={tz} /> : null}
         </Section>
       ) : null}
 

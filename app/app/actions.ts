@@ -13,6 +13,7 @@ import {
   removeApiKey,
   removeMailConnection,
   saveApiKey,
+  setBriefSettings,
   saveMailConnection,
   setMaskLevel,
   setProfile,
@@ -285,4 +286,29 @@ export const savePrivacy = async (formData: FormData): Promise<void> => {
   revalidatePath('/app')
   if (failed) back('privacy')
   done('privacy')
+}
+
+const hour = z.coerce.number().int().min(0).max(23)
+const briefSchema = z.object({ brief_hour: hour, evening_hour: hour, brief_on: z.boolean(), evening_on: z.boolean() })
+
+// The person's morning brief and evening line on Telegram: the hour in their own time zone, and on or off.
+export const saveBriefs = async (formData: FormData): Promise<void> => {
+  const parsed = briefSchema.safeParse({
+    brief_hour: formData.get('brief_hour'),
+    evening_hour: formData.get('evening_hour'),
+    brief_on: formData.get('brief_on') === 'on',
+    evening_on: formData.get('evening_on') === 'on',
+  })
+  if (!parsed.success) back('input')
+  const user = await signedIn().catch(() => null)
+  if (!user) redirect('/login?next=/app')
+  let failed = false
+  try {
+    await setBriefSettings(user.sb, parsed.data!)
+  } catch {
+    failed = true
+  }
+  revalidatePath('/app')
+  if (failed) back('briefs')
+  done('briefs')
 }

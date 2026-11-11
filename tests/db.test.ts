@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
 import { randomBytes } from 'node:crypto'
 import { binding, seal } from '../lib/vault'
+import { BRIEF_COLS } from '../lib/store'
 import { ACTIVITY_COLS, APPROVAL_COLS, EVENT_COLS, GOAL_COLS, TASK_COLS } from '../lib/types'
 
 const ALICE = '11111111-1111-4111-8111-111111111111'
@@ -791,6 +792,9 @@ describe('morning brief and evening line', () => {
     await fails(as(carol, 'update profiles set brief_hour = 24'), /check constraint/)
     await fails(as(carol, 'update profiles set evening_hour = -1'), /check constraint/)
     expect((await targets()).find((t) => t.user_id === CAROL)).toMatchObject({ timezone: 'America/New_York', brief_hour: 7, evening_hour: 22 })
+    // another person cannot change them
+    expect(await as(bob, 'update profiles set brief_on = false where user_id = $1 returning user_id', [CAROL])).toEqual([])
+    expect((await targets()).find((t) => t.user_id === CAROL)?.brief_on).toBe(true)
   })
 
   // Two runs at once are serialised by the primary key on brief_log; PGlite runs one query at a time, so here they
@@ -866,7 +870,7 @@ describe('morning brief and evening line', () => {
 
 describe('code and schema agree', () => {
   test('every column the code selects exists', async () => {
-    const lists: Record<string, string> = { tasks: TASK_COLS, approvals: APPROVAL_COLS, goals: GOAL_COLS, events: EVENT_COLS, activity: ACTIVITY_COLS }
+    const lists: Record<string, string> = { tasks: TASK_COLS, approvals: APPROVAL_COLS, goals: GOAL_COLS, events: EVENT_COLS, activity: ACTIVITY_COLS, profiles: BRIEF_COLS }
     for (const [table, cols] of Object.entries(lists)) {
       const rows = (await pg.query<{ column_name: string }>(
         `select column_name from information_schema.columns where table_schema = 'public' and table_name = $1`, [table],
