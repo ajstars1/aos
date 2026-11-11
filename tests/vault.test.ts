@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { SMTPServer } from 'smtp-server'
 import { mailFailure, parseRecipient, sendMail, transportOptions, unsendable, verifyLogin, type MailLogin, type Server } from '../lib/mail'
 import type { SealedRequest, SealedResponse } from '../lib/sealed-http'
-import type { Claim } from '../lib/send-db'
+import type { Claim, ClaimResult } from '../lib/send-db'
 import { outcomeLine, sendApproved, type SenderDeps } from '../lib/sender'
 import type { Approval } from '../lib/types'
 import { binding, open, seal } from '../lib/vault'
@@ -153,7 +153,7 @@ describe('the sealed send', () => {
   })
 
   const harness = (
-    opts: { claim?: Claim; claimError?: string; sendError?: unknown; key?: Buffer | null; response?: SealedResponse; requestError?: unknown; maskFails?: boolean } = {},
+    opts: { claim?: ClaimResult; claimError?: string; sendError?: unknown; key?: Buffer | null; response?: SealedResponse; requestError?: unknown; maskFails?: boolean } = {},
   ) => {
     const requests: SealedRequest[] = []
     const finished: Array<[string, number, string, string]> = []
@@ -203,6 +203,18 @@ describe('the sealed send', () => {
     expect(odd.kind).toBe('not_sent')
     expect(JSON.stringify(odd)).not.toContain('relation')
     expect((await sendApproved(harness({ key: null }).deps)).kind).toBe('skipped')
+  })
+
+  test('a send the touch cap refused opens nothing, sends nothing and records nothing more', async () => {
+    const why = 'Blocked: priya@example.com already got 2 emails from you in the last 30 days, and a third is not sent. It stays approved; Send now works again after 2026-12-01'
+    const h = harness({ claim: { user_id: USER, blocked: why } })
+    const out = await sendApproved(h.deps)
+    expect(out).toEqual({
+      kind: 'blocked',
+      reason: 'priya@example.com already got 2 emails from you in the last 30 days, and a third is not sent. It stays approved; Send now works again after 2026-12-01',
+    })
+    expect([h.sent, h.finished, h.requests]).toEqual([[], [], []])
+    expect(outcomeLine(9, out)).toBe(`Draft #9 was not sent: priya@example.com already got 2 emails from you in the last 30 days, and a third is not sent. It stays approved; Send now works again after 2026-12-01.`)
   })
 
   test('a draft aos cannot send is released, not sent', async () => {

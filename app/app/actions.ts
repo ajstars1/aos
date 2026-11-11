@@ -35,7 +35,8 @@ const done = (notice: string): never => redirect(`/app?n=${notice}`)
 // Where to land after aos tried to send an approved email.
 const afterSend = (o: SendOutcome): never => {
   if (o.kind === 'sent') return done(o.api ? 'ran' : 'sent')
-  if (o.kind === 'skipped') return back()
+  if (o.kind === 'skipped') return o.reason === 'it is scheduled for later' ? done('scheduled') : back()
+  if (o.kind === 'blocked') return back('send_touch')
   if (o.kind === 'refused') return back('send_refused')
   return back(o.kind === 'unknown' ? 'send_unknown' : /login|Reconnect/.test(o.reason) ? 'send_login' : /recipient|subject/.test(o.reason) ? 'send_shape' : /limit/.test(o.reason) ? 'send_limit' : 'send')
 }

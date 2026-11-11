@@ -53,6 +53,7 @@ const MESSAGES: Record<string, string> = {
   send_login: 'Approved, but your mail provider refused the saved login. Reconnect your email below, then press Send now.',
   send_shape: 'Approved, but aos cannot send this one itself: it needs exactly one email address and a subject. Your assistant can still send it.',
   send_limit: 'Approved, but the limit of 50 emails a day is reached. Send it tomorrow.',
+  send_touch: 'Approved, but not sent: this address already got 2 emails from you in the last 30 days. The reason is shown with the draft; it stays approved.',
   send_unknown: 'The connection broke while sending. Check your Sent folder, or the service, before trying again.',
   send_refused: 'Approved and run, but the service refused the request. The answer is shown with the draft; it is not retried.',
   key_input: 'Check the key details: a short name (letters, digits, - or _), the service address such as api.example.com, and the key itself.',
@@ -62,6 +63,8 @@ const MESSAGES: Record<string, string> = {
 
 const NOTICES: Record<string, string> = {
   sent: 'Sent from your mailbox.',
+  scheduled: 'Approved. aos sends it from your mailbox at its scheduled time.',
+  briefs: 'Daily messages saved.',
   mail: 'Email connected. Approved emails now go out from your own mailbox.',
   ran: 'Done. The request ran with your saved key.',
   key: 'Key saved. Your assistant can now use it by name, without seeing it.',
@@ -89,12 +92,18 @@ const sendsOnYes = (a: Approval, mail: MailConnection | null): boolean => {
   return mail !== null && a.channel === 'email' && unsendable(a) === null
 }
 
-const yesHint = (a: Approval, mail: MailConnection | null): string =>
+// An email aos will send by itself once its time has come.
+const sendsLater = (a: Approval, mail: MailConnection | null): boolean =>
+  mail !== null && a.channel === 'email' && unsendable(a) === null && a.send_after !== null && new Date(a.send_after).getTime() > Date.now()
+
+const yesHint = (a: Approval, mail: MailConnection | null, tz: string): string =>
   a.channel === 'api'
     ? 'Yes runs this request now with your saved key.'
     : sendsOnYes(a, mail)
       ? `Yes sends it now from ${mail?.username}.`
-      : 'Yes approves it. Your assistant sends it the next time you talk to it.'
+      : sendsLater(a, mail)
+        ? `Yes approves it. aos sends it from ${mail?.username} after ${fmtWhen(a.send_after, tz)} (checked about once an hour).`
+        : 'Yes approves it. Your assistant sends it the next time you talk to it.'
 
 const yesLabel = (a: Approval, mail: MailConnection | null): string =>
   a.channel === 'api' ? 'Yes, run it now' : sendsOnYes(a, mail) ? 'Yes, send now' : 'Yes, approve'
@@ -113,7 +122,7 @@ const Draft = ({ a, tz, mail }: { a: Approval; tz: string; mail: MailConnection 
     </p>
     {a.subject ? <p className="mt-2 break-words text-sm font-medium">{a.subject}</p> : null}
     <p className="mt-2 whitespace-pre-wrap break-words text-sm">{a.draft}</p>
-    <p className="mt-3 text-xs text-faint">{yesHint(a, mail)}</p>
+    <p className="mt-3 text-xs text-faint">{yesHint(a, mail, tz)}</p>
     <form action={decideDraft} className="mt-4">
       <input type="hidden" name="id" value={a.id} />
       <details className="mb-3" hidden={a.channel === 'api'}>

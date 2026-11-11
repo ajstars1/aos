@@ -5,7 +5,7 @@
 import { isProvider, mailFailure, parseRecipient, sendMail, unsendable, type MailLogin, type Message } from './mail'
 import { maskValue, privacyFor } from './privacy'
 import { httpFailure, parseKeyMeta, scrubKey, sealedRequest, type SealedRequest, type SealedResponse } from './sealed-http'
-import { claimSend, claimSendFromChat, finishSend, type Claim } from './send-db'
+import { claimSend, claimSendFromChat, finishSend, isBlocked, type Claim, type ClaimResult } from './send-db'
 import { binding, open, vaultKey } from './vault'
 
 export type SendOutcome =
@@ -15,13 +15,15 @@ export type SendOutcome =
   | { kind: 'skipped'; reason: string }
   // it did not go out; the draft is still approved and can be sent again
   | { kind: 'not_sent'; reason: string }
+  // the per-recipient cap said no; the draft stays approved with the reason, and the timer leaves it alone
+  | { kind: 'blocked'; reason: string }
   // the service received the request and said no; never retried
   | { kind: 'refused'; reason: string }
   // it may have gone out; never retried automatically
   | { kind: 'unknown'; reason: string }
 
 export interface SenderDeps {
-  claim: () => Promise<Claim>
+  claim: () => Promise<ClaimResult>
   finish: (userId: string, id: number, outcome: 'sent' | 'failed' | 'retry', result: string) => Promise<void>
   key: Buffer | null
   send: (login: MailLogin, msg: Message) => Promise<void>
@@ -34,6 +36,9 @@ export interface SenderDeps {
 // Messages the database raises on purpose. Only these are shown.
 const CLAIM_ERROR = /^Cannot send draft \d+: ([a-z0-9 ,]+)$/
 const QUIET = new Set(['it is not an email', 'no email connection', 'it is scheduled for later'])
+
+// "Blocked: a@b.com already got 2 emails ... after 2026-12-10" -> the part after "Blocked: ", without a final stop.
+export const blockedReason = (text: string): string => text.replace(/^Blocked:\s*/, '').replace(/[.\s]+$/, '').slice(0, 400)
 
 const hint = (address: string): string => address.replace(/^(.).*(@.*)$/, '$1***$2')
 
@@ -109,14 +114,16 @@ const runRequest = async (d: SenderDeps, claim: Claim, release: Release): Promis
 export const sendApproved = async (d: SenderDeps): Promise<SendOutcome> => {
   if (!d.key) return { kind: 'skipped', reason: 'sending is not set up on this server' }
 
-  let claim: Claim
+  let claimed: ClaimResult
   try {
-    claim = await d.claim()
+    claimed = await d.claim()
   } catch (e) {
     const why = CLAIM_ERROR.exec(e instanceof Error ? e.message : '')?.[1]
     if (why && QUIET.has(why)) return { kind: 'skipped', reason: why }
     return { kind: 'not_sent', reason: why ?? 'something went wrong. Try again in a minute' }
   }
+  if (isBlocked(claimed)) return { kind: 'blocked', reason: blockedReason(claimed.blocked) }
+  const claim: Claim = claimed
 
   const { approval: a, user_id: userId } = claim
   const release: Release = async (reason) => {
@@ -135,7 +142,7 @@ const maskAnswer = async (userId: string, text: string): Promise<string> => {
   return String(await maskValue(privacy, text, 'api'))
 }
 
-const real = (claim: () => Promise<Claim>): SenderDeps => ({
+const real = (claim: () => Promise<ClaimResult>): SenderDeps => ({
   claim,
   finish: finishSend,
   key: vaultKey(),
@@ -150,15 +157,19 @@ export const sendForUser = (userId: string, id: number): Promise<SendOutcome> =>
 
 export const sendFromChat = (chatId: string, id: number): Promise<SendOutcome> => sendApproved(real(() => claimSendFromChat(chatId, id)))
 
-export const outcomeLine = (id: number, o: SendOutcome): string =>
-  o.kind === 'sent'
-    ? o.api
-      ? `Draft #${id} ran: ${o.to}.`
-      : `Draft #${id} was sent to ${o.to}.`
-    : o.kind === 'skipped'
-      ? `Draft #${id} was not sent by aos: ${o.reason}.`
-      : o.kind === 'not_sent'
-        ? `Draft #${id} was not sent: ${o.reason}. It is still approved.`
-        : o.kind === 'refused'
-          ? `Draft #${id} ran, but ${o.reason}. It is not retried; approval_list shows the answer.`
-          : `Draft #${id} may not have been sent: ${o.reason}.`
+export const outcomeLine = (id: number, o: SendOutcome): string => {
+  switch (o.kind) {
+    case 'sent':
+      return o.api ? `Draft #${id} ran: ${o.to}.` : `Draft #${id} was sent to ${o.to}.`
+    case 'skipped':
+      return `Draft #${id} was not sent by aos: ${o.reason}.`
+    case 'not_sent':
+      return `Draft #${id} was not sent: ${o.reason}. It is still approved.`
+    case 'blocked':
+      return `Draft #${id} was not sent: ${o.reason}.`
+    case 'refused':
+      return `Draft #${id} ran, but ${o.reason}. It is not retried; approval_list shows the answer.`
+    case 'unknown':
+      return `Draft #${id} may not have been sent: ${o.reason}.`
+  }
+}

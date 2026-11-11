@@ -11,6 +11,7 @@ import { ACTIVITY_COLS, APPROVAL_COLS, EVENT_COLS, GOAL_COLS, TASK_COLS } from '
 const ALICE = '11111111-1111-4111-8111-111111111111'
 const BOB = '22222222-2222-4222-8222-222222222222'
 const E_NEWLINE = '/x\ny'
+const CAROL = '33333333-3333-4333-8333-333333333333' // added later, for a clean send history
 const APP = 'a0000000-0000-4000-8000-00000000000a' // an OAuth client id, as in a token issued to Claude or ChatGPT
 
 // The parts of a Supabase project the migration relies on: roles, the auth schema and its two helpers.
@@ -323,8 +324,8 @@ describe('the vault and the sealed send', () => {
   const server: Who = { role: 'service_role' }
   const sealed = seal(randomBytes(32), 'app-password-SECRET', binding(ALICE, 'smtp'))
   const META = JSON.stringify({ provider: 'gmail', username: 'alice@example.com', from_name: 'Alice' })
-  const newEmail = async (who: Who, extra = ''): Promise<number> =>
-    Number((await as(who, `select (request_approval('email', 'Approved words.', 'Priya <priya@example.com>', null, ${extra || 'null'}, 'Quote')).id as id`))[0].id)
+  const newEmail = async (who: Who, extra = '', to = 'Priya <priya@example.com>'): Promise<number> =>
+    Number((await as(who, `select (request_approval('email', 'Approved words.', $1, null, ${extra || 'null'}, 'Quote')).id as id`, [to]))[0].id)
   const claim = (user: string, id: number): Promise<Row[]> => as(server, 'select send_claim($1, $2) as c', [user, id])
 
   test('an assistant cannot change a draft after asking; the person can', async () => {
@@ -421,7 +422,7 @@ describe('the vault and the sealed send', () => {
   test('a yes from the linked chat can claim only that person\'s email', async () => {
     const code = String((await as(alice, `select create_link_code('telegram') as c`))[0].c)
     await as(server, `select channel_claim('telegram', $1, '800200', null)`, [code])
-    const id = await newEmail(aliceApp)
+    const id = await newEmail(aliceApp, '', 'ravi@example.com')
     await as(server, `select channel_decide('telegram', '800200', $1, 'approved')`, [id])
     await fails(as(server, `select channel_send_claim('telegram', '999', $1)`, [id]), /not linked/)
     const got = (await as(server, `select channel_send_claim('telegram', '800200', $1) as c`, [id]))[0].c as { user_id: string }
@@ -436,7 +437,7 @@ describe('the vault and the sealed send', () => {
     )
     await pg.query(`update approvals set status = 'approved' where user_id = $1 and draft = 'x'`, [ALICE])
     await pg.query(`update approvals set send_claimed_at = now(), status = 'sent' where user_id = $1 and draft = 'x'`, [ALICE])
-    const id = await newEmail(aliceApp)
+    const id = await newEmail(aliceApp, '', 'meera@example.com')
     await as(alice, `select decide_approval($1, 'approved')`, [id])
     await fails(claim(ALICE, id), /limit of 50 emails a day/)
   })
@@ -612,6 +613,155 @@ describe('stand-ins for contact details', () => {
   })
 })
 
+describe('scheduled sends and the touch cap', () => {
+  const server: Who = { role: 'service_role' }
+  const carol: Who = { sub: CAROL }
+  const carolApp: Who = { sub: CAROL, clientId: APP }
+  const META = JSON.stringify({ provider: 'gmail', username: 'carol@example.com' })
+  const PAST = '2026-01-01T09:00:00Z'
+  const email = async (who: Who, to: string, sendAfter: string | null = null): Promise<number> =>
+    Number((await as(who, `select (request_approval('email', 'Hi there.', $1, null, $2::timestamptz, 'Hello')).id as id`, [to, sendAfter]))[0].id)
+  const approve = (who: Who, id: number): Promise<Row[]> => as(who, `select decide_approval($1, 'approved')`, [id])
+  const claim = async (user: string, id: number): Promise<Row> => (await as(server, 'select send_claim($1, $2) as c', [user, id]))[0].c as Row
+  const finish = (user: string, id: number, outcome: string): Promise<Row[]> => as(server, 'select send_finish($1, $2, $3, $4)', [user, id, outcome, 'x'])
+  const row = async (id: number): Promise<Row> =>
+    (await pg.query<Row>('select status, result, send_claimed_at, send_tries from approvals where id = $1', [id])).rows[0]
+
+  test('setup: a third person with a mailbox, and Bob with one', async () => {
+    await pg.query('insert into auth.users (id) values ($1)', [CAROL])
+    await as(carol, 'select put_secret($1, $2::jsonb, $3)', ['smtp', META, seal(randomBytes(32), 'pw', binding(CAROL, 'smtp'))])
+    await as(bob, 'select put_secret($1, $2::jsonb, $3)', ['smtp', META, seal(randomBytes(32), 'pw', binding(BOB, 'smtp'))])
+  })
+
+  test('one address per recipient line, whatever the case or display name', async () => {
+    const key = async (v: string | null): Promise<unknown> => (await pg.query<Row>('select recipient_key($1) as k', [v])).rows[0].k
+    expect(await key('Priya <PRIYA@Example.com>')).toBe('priya@example.com')
+    expect(await key('priya@example.com, PRIYA@example.com')).toBe('priya@example.com')
+    expect(await key('a@example.com, b@example.com')).toBeNull()
+    expect(await key('Priya on LinkedIn')).toBeNull()
+    expect(await key(null)).toBeNull()
+  })
+
+  let third = 0
+  test('a third email to one address within 30 days is blocked and stays approved, with the reason', async () => {
+    const first = await email(carolApp, 'Dev <dev@example.com>')
+    await approve(carol, first)
+    await claim(CAROL, first)
+    await finish(CAROL, first, 'sent')
+    // an email the assistant sent itself and marked sent counts too, and the address is matched in any case
+    const second = await email(carolApp, 'DEV@Example.com')
+    await approve(carol, second)
+    await as(carolApp, `select mark_approval_sent($1, 'sent from Gmail')`, [second])
+
+    third = await email(carolApp, 'dev@example.com')
+    await approve(carol, third)
+    const got = await claim(CAROL, third)
+    expect(String(got.blocked)).toMatch(/^Blocked: dev@example\.com already got 2 emails from you in the last 30 days/)
+    expect(got.ciphertext).toBeUndefined()
+    expect(got.approval).toBeUndefined()
+    const after = await row(third)
+    expect(after.status).toBe('approved')
+    expect(String(after.result)).toMatch(/^Blocked: dev@example\.com/)
+    expect([after.send_claimed_at, after.send_tries]).toEqual([null, 0])
+
+    // another address is not affected
+    const other = await email(carolApp, 'eve@example.com')
+    await approve(carol, other)
+    expect((await claim(CAROL, other)).ciphertext).toMatch(/^v1\./)
+    await finish(CAROL, other, 'retry')
+  })
+
+  test('the cap is per person: Carol\'s emails do not count for Bob', async () => {
+    const id = await email({ sub: BOB, clientId: APP }, 'dev@example.com')
+    await approve(bob, id)
+    expect((await claim(BOB, id)).ciphertext).toMatch(/^v1\./)
+    await finish(BOB, id, 'sent')
+  })
+
+  test('nobody can read, add, change or remove a touch, or change the try count', async () => {
+    for (const who of [carol, carolApp, bob]) {
+      await fails(as(who, 'select * from touches'), /permission denied/)
+      await fails(as(who, `insert into touches (user_id, recipient_key, approval_id) values ('${CAROL}', 'x@example.com', 1)`), /permission denied/)
+      await fails(as(who, 'delete from touches'), /permission denied/)
+      await fails(as(who, `update touches set at = now() - interval '1 year'`), /permission denied/)
+    }
+    await fails(as(carolApp, 'select touch_block($1, $2)', [CAROL, 'dev@example.com']), /permission denied/)
+    await fails(as(server, 'select touch_block($1, $2)', [CAROL, 'dev@example.com']), /permission denied/)
+    await fails(as(carolApp, 'update approvals set send_tries = 5 where id = $1', [third]), /Only the aos server/)
+    await fails(as(carol, 'update approvals set send_tries = 5 where id = $1', [third]), /Only the aos server/)
+  })
+
+  test('soft-deleting the earlier drafts does not lift the cap; 30 days do', async () => {
+    const sent = (await as(carol, `select id from approvals where status = 'sent' and recipient ilike '%dev@example.com%'`)).map((r) => Number(r.id))
+    expect(sent.length).toBe(2)
+    await as(carolApp, 'update approvals set deleted_at = now() where id = any($1::bigint[])', [sent])
+    expect((await claim(CAROL, third)).blocked).toBeDefined()
+    await pg.query(`update touches set at = now() - interval '31 days' where user_id = $1`, [CAROL])
+    expect((await claim(CAROL, third)).ciphertext).toMatch(/^v1\./)
+    await finish(CAROL, third, 'sent')
+    expect((await row(third)).status).toBe('sent')
+  })
+
+  test('two touches recorded before this rule count from the day they happened', async () => {
+    await pg.query(
+      `insert into touches (user_id, recipient_key, approval_id, at) values ($1, 'old@example.com', -1, now() - interval '2 days'), ($1, 'old@example.com', -2, now() - interval '40 days')`,
+      [CAROL],
+    )
+    const id = await email(carolApp, 'old@example.com')
+    await approve(carol, id)
+    expect((await claim(CAROL, id)).ciphertext).toMatch(/^v1\./) // only one is within 30 days
+    await finish(CAROL, id, 'retry')
+  })
+
+  test('the timer finds approved emails that are due, for people with a mailbox, and nothing else', async () => {
+    const due = await email(carolApp, 'f1@example.com', PAST)
+    await approve(carol, due)
+    const later = await email(carolApp, 'f2@example.com', '2099-01-01T00:00:00Z')
+    await approve(carol, later)
+    const pending = await email(carolApp, 'f3@example.com', PAST)
+    const now = await email(carolApp, 'f4@example.com')
+    await approve(carol, now)
+    await pg.query(`insert into touches (user_id, recipient_key, approval_id) values ($1, 'blk@example.com', -3), ($1, 'blk@example.com', -4)`, [CAROL])
+    const blocked = await email(carolApp, 'blk@example.com', PAST)
+    await approve(carol, blocked)
+    expect((await claim(CAROL, blocked)).blocked).toBeDefined()
+    const bobDue = await email({ sub: BOB, clientId: APP }, 'f5@example.com', PAST)
+    await approve(bob, bobDue)
+    const aliceDue = await email(aliceApp, 'f6@example.com', PAST) // Alice removed her mailbox earlier
+    await approve(alice, aliceDue)
+
+    const list = async (): Promise<Array<{ user_id: string; id: number; chat_id: string | null }>> =>
+      (await as(server, 'select cron_due_sends(50) as d'))[0].d as Array<{ user_id: string; id: number; chat_id: string | null }>
+    const ids = (await list()).map((d) => Number(d.id))
+    expect(ids).toContain(due)
+    expect(ids).toContain(bobDue)
+    for (const id of [later, pending, now, blocked, aliceDue]) expect(ids).not.toContain(id)
+    const bobRow = (await list()).find((d) => Number(d.id) === bobDue)
+    expect(bobRow).toEqual({ user_id: BOB, id: bobDue, chat_id: '700100' })
+    expect((await list()).find((d) => Number(d.id) === due)?.chat_id).toBeNull()
+
+    // being sent right now: left out; given up after 3 tries
+    await claim(CAROL, due)
+    expect((await list()).map((d) => Number(d.id))).not.toContain(due)
+    await finish(CAROL, due, 'retry')
+    await claim(CAROL, due)
+    await finish(CAROL, due, 'retry')
+    await claim(CAROL, due)
+    await finish(CAROL, due, 'retry')
+    expect((await row(due)).send_tries).toBe(3)
+    expect((await list()).map((d) => Number(d.id))).not.toContain(due)
+    // the person can still send it by hand
+    expect((await claim(CAROL, due)).ciphertext).toMatch(/^v1\./)
+    await finish(CAROL, due, 'sent')
+  })
+
+  test('users and apps cannot ask the timer\'s list', async () => {
+    await fails(as(carol, 'select cron_due_sends(10)'), /permission denied/)
+    await fails(as(carolApp, 'select cron_due_sends(10)'), /permission denied/)
+    await fails(as({ role: 'anon' }, 'select cron_due_sends(10)'), /permission denied/)
+  })
+})
+
 describe('code and schema agree', () => {
   test('every column the code selects exists', async () => {
     const lists: Record<string, string> = { tasks: TASK_COLS, approvals: APPROVAL_COLS, goals: GOAL_COLS, events: EVENT_COLS, activity: ACTIVITY_COLS }
@@ -641,7 +791,7 @@ describe('code and schema agree', () => {
     const tables = (await pg.query<{ relname: string; relrowsecurity: boolean }>(
       `select relname, relrowsecurity from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r'`,
     )).rows
-    expect(tables.length).toBe(12)
+    expect(tables.length).toBe(13)
     for (const t of tables) expect(t.relrowsecurity, t.relname).toBe(true)
     const deletes = (await pg.query(`select 1 from pg_policies where schemaname = 'public' and cmd in ('DELETE', 'ALL')`)).rows
     expect(deletes).toEqual([])

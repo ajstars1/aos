@@ -21,6 +21,7 @@ export interface BotDeps {
 }
 
 const MAX_DRAFTS = 10
+const SCHEDULED = 'it is scheduled for later'
 
 const notLinked = (site: string): string =>
   `This chat is not linked to aos yet. Open ${site}/app, press "Connect Telegram", then press Start here.`
@@ -44,6 +45,8 @@ const decidedLine = (a: Pick<Approval, 'id' | 'status'>, sent?: SendOutcome): st
   if (a.status !== 'approved') return `❌ Draft #${a.id} rejected. It will not be sent.`
   if (sent?.kind === 'sent') return sent.api ? `✅ Draft #${a.id} approved and run: ${sent.to}.` : `✅ Draft #${a.id} approved and sent to ${sent.to}.`
   if (sent?.kind === 'refused') return `⚠️ Draft #${a.id} approved and run, but ${sent.reason}. It is not retried.`
+  if (sent?.kind === 'blocked') return `⛔ Draft #${a.id} approved, but not sent: ${sent.reason}.`
+  if (sent?.kind === 'skipped' && sent.reason === SCHEDULED) return `✅ Draft #${a.id} approved. aos sends it from your mailbox at its scheduled time.`
   if (sent?.kind === 'not_sent') return `✅ Draft #${a.id} approved, but not sent: ${sent.reason}. It is still approved.`
   if (sent?.kind === 'unknown') return `⚠️ Draft #${a.id} approved, but it may not have been sent: ${sent.reason}.`
   return `✅ Draft #${a.id} approved. Your assistant sends it the next time it checks your drafts.`
