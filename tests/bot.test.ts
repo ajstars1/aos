@@ -176,6 +176,15 @@ describe('the bot', () => {
     expect(h.sent[0].text).toContain('still approved')
   })
 
+  test('a yes on a scheduled email says aos sends it at its time; a capped one says why not', async () => {
+    const later = harness(SNAP, { sent: { kind: 'skipped', reason: 'it is scheduled for later' } })
+    await handleUpdate(msg('yes 5'), later.deps)
+    expect(later.sent[0].text).toBe('✅ Draft #5 approved. aos sends it from your mailbox at its scheduled time.')
+    const capped = harness(SNAP, { sent: { kind: 'blocked', reason: 'priya@example.com already got 2 emails from you in the last 30 days' } })
+    await handleUpdate(msg('yes 5'), capped.deps)
+    expect(capped.sent[0].text).toBe('⛔ Draft #5 approved, but not sent: priya@example.com already got 2 emails from you in the last 30 days.')
+  })
+
   test('a no, or a yes on something that is not an email, never sends', async () => {
     const no = harness(SNAP, { sent: { kind: 'sent', to: 'x@example.com' } })
     await handleUpdate(button('r:5'), no.deps)

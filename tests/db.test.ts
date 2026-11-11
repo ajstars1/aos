@@ -876,9 +876,9 @@ describe('code and schema agree', () => {
   })
 
   test('every database function the code calls exists with those argument names', async () => {
-    const src = ['store.ts', 'channel-db.ts', 'send-db.ts', 'mask-db.ts'].map((f) => readFileSync(join(import.meta.dir, '..', 'lib', f), 'utf8')).join('\n')
+    const src = ['store.ts', 'channel-db.ts', 'send-db.ts', 'mask-db.ts', 'cron-db.ts'].map((f) => readFileSync(join(import.meta.dir, '..', 'lib', f), 'utf8')).join('\n')
     const calls = [...src.matchAll(/\.rpc\('([a-z_]+)',\s*\{([^}]*)\}/g)]
-    expect(calls.length).toBeGreaterThanOrEqual(22)
+    expect(calls.length).toBeGreaterThanOrEqual(26)
     for (const [, name, body] of calls) {
       const used = [...body.matchAll(/(p_[a-z_]+):/g)].map((m) => m[1])
       const fn = (await pg.query<{ args: string[] }>(

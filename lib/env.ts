@@ -54,3 +54,7 @@ export const channelEnv = (): ChannelEnv => ({
   webhookSecret: pick(process.env.TELEGRAM_WEBHOOK_SECRET, /^[A-Za-z0-9_-]{32,256}$/),
   botUsername: pick(process.env.NEXT_PUBLIC_TELEGRAM_BOT, /^[A-Za-z0-9_]{5,32}$/),
 })
+
+// Server only. Vercel sends it as "Authorization: Bearer <CRON_SECRET>" with every cron run. 16 to 256 printable
+// characters, no spaces (it travels in a header). Null when unset or malformed: the timer then answers 503.
+export const cronSecret = (): string | null => pick(process.env.CRON_SECRET, /^[\x21-\x7e]{16,256}$/)

@@ -13,6 +13,16 @@ const LIMIT = 4000
 
 export const clip = (text: string, max = LIMIT): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
+// Telegram answered, and the answer was no (blocked bot, bad chat, too many requests): nothing was delivered.
+export class TelegramRefused extends Error {
+  readonly status: number
+  constructor(method: string, status: number) {
+    super(`Telegram ${method} failed with ${status}`)
+    this.name = 'TelegramRefused'
+    this.status = status
+  }
+}
+
 export const callTelegram = async (token: string, method: string, body: Record<string, unknown>): Promise<void> => {
   const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST',
@@ -20,7 +30,7 @@ export const callTelegram = async (token: string, method: string, body: Record<s
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(8000),
   })
-  if (!res.ok) throw new Error(`Telegram ${method} failed with ${res.status}`)
+  if (!res.ok) throw new TelegramRefused(method, res.status)
 }
 
 export const sendText = (token: string, chatId: string, text: string, buttons?: Button[][]): Promise<void> =>

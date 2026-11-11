@@ -209,7 +209,7 @@ export const registerTools = (server: McpServer): void => {
         subject: z.string().min(1).max(300).regex(/^[^\r\n]+$/).optional().describe('Subject line, for an email'),
         draft: z.string().min(1).max(5000).describe('The exact text to send, word for word'),
         task_id: ID.optional().describe('The task this draft belongs to; it waits until the person decides'),
-        send_after: ISO.optional().describe('Earliest time it may go out'),
+        send_after: ISO.optional().describe('Earliest time it may go out. An approved email with a send_after is sent by aos itself once that time has passed (checked about once an hour), when the person connected their mailbox'),
       }),
       annotations: WRITE,
     },
