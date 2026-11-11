@@ -5,7 +5,7 @@
 
 A multi-user version of the aos core that anyone adds to the AI assistant they already use (Claude, ChatGPT, any MCP client) by pasting one link. Nothing to install, works on Mac, Windows, Linux and phones.
 
-It grew out of **aos control**, Ayush's personal setup on his own Linux PC (private, not in this repo). This is the version for everyone, with its **own database**; the two share no data and no code at runtime.
+It grew out of **[aos control](https://github.com/ajstars1/aos-control)**, the self-hosted version that runs on your own Linux PC. This is the version for everyone, with its **own database**; the two share no data and no code at runtime.
 
 ## Start using it
 
@@ -23,7 +23,7 @@ It grew out of **aos control**, Ayush's personal setup on his own Linux PC (priv
 | | Mac | Windows | Linux | Phone |
 |---|---|---|---|---|
 | **aos connect** (this folder): tasks, drafts you approve, goals, sealed and scheduled email send, Telegram with a daily brief | ✅ | ✅ | ✅ | ✅ |
-| **aos control** (private, not in this repo): the agent that works on its own on a PC, desk control, power-on, Discord | ❌ | ❌ | ✅ (Ayush's setup: systemd, tmux, Hyprland) | via Discord |
+| **[aos control](https://github.com/ajstars1/aos-control)** (self-hosted, Linux): the agent that works on its own on a PC, desk control, power-on, Discord | ❌ | ❌ | ✅ (systemd; desk control needs Hyprland) | via Discord |
 
 **Status (11 Nov 2026):** the app, the connector link and the OAuth flow up to the sign-in page are live and checked. A full run by a person (Google sign-in → add the connector in Claude → first tool call) has not been done yet; until it has, treat this as an early preview.
 
