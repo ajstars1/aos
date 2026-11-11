@@ -5,3 +5,4 @@ node_modules
 .vercel
 supabase/.temp
 tsconfig.tsbuildinfo
+next-env.d.ts
